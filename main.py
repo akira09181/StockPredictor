@@ -137,3 +137,29 @@ def get_stock_data(tickers:list[str],period:str):
     print(statistics)
     
     return statistics
+
+@app.post("/stock/correlation")
+def get_stock_data(tickers:list[str],period:str):
+    '''
+    tickerシンボルを受け取って、相関分析を返すAPI
+
+    tickers: 値を取りたいシンボルのリスト
+    （sbiの株の番号+.Tで値を取得することもできる。）
+
+    perod: 1日（1d）、5日（5d）、1ヶ月（1mo）、3ヶ月（3mo）、6ヶ月（6mo）、1年（1y）、2年（2y）、5年（5y）、10年（10y）、年初来（ytd）、最大（max）
+    '''
+    data = []
+    for ticker in tickers:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+        data.append(hist)
+    # 必要なカラムを選択
+    data = data[0][['Open', 'High', 'Low', 'Close', 'Volume']]
+
+    # 欠損値の処理
+    data.fillna(method='ffill', inplace=True)
+
+    # 基本的な統計量の計算
+    correlation_matrix = data.corr()
+    
+    return correlation_matrix
