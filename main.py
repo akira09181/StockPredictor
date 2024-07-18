@@ -9,6 +9,17 @@ import matplotlib.pyplot as plt
 from fastapi.responses import HTMLResponse, FileResponse
 import seaborn as sns
 from datetime import datetime
+from statsmodels.tsa.arima.model import ARIMA
+from pydantic import BaseModel
+from typing import List
+
+class StockRequest(BaseModel):
+    ticker: str
+    period: str = '1y'
+    steps: int = 30
+
+class ForecastResponse(BaseModel):
+    forecast: List[float]
 
 app = FastAPI()
 #app.include_router(alphavantage_api.router)
@@ -184,3 +195,136 @@ def get_stock_data(tickers:list[str],period:str):
     plt.close()
     
     return {'自己相関':correlation_kihon,'相関行列':correlation_matrix}
+
+@app.post("/stock/ARIMA")
+def get_stock_data(tickers:list[str],period:str):
+    '''
+    tickerシンボルを受け取って、自己回帰移動平均モデルの予測を返すAPI
+
+    tickers: 値を取りたいシンボルのリスト
+    （sbiの株の番号+.Tで値を取得することもできる。）
+
+    perod: 1日（1d）、5日（5d）、1ヶ月（1mo）、3ヶ月（3mo）、6ヶ月（6mo）、1年（1y）、2年（2y）、5年（5y）、10年（10y）、年初来（ytd）、最大（max）
+    '''
+    data = []
+    for ticker in tickers:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+        data.append(hist)
+    # 必要なカラムを選択
+    data = data[0][['Close']]
+
+    # 欠損値の処理
+    data = data.dropna()
+
+    # ARIMAモデルの定義と適用
+    model = ARIMA(data, order=(5,1,0))
+    model_fit = model.fit()
+
+    # 予測の実施
+    forecast = model_fit.forecast(steps=30)
+
+    plt.figure(figsize=(12, 6))
+    plt.plot(data, label='Observed')
+    plt.plot(forecast, label='Forecast')
+    plt.title(f'{ticker} Stock Price Prediction')
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.legend()
+
+    # プロット画像の保存
+    now = datetime.now()
+    plot_filename = f'forecast{now}.png'
+    plt.savefig(plot_filename)
+    plt.close()
+    
+    return {'モデルサマリー': model_fit.summary()}
+
+@app.post("/predict_arima", response_model=ForecastResponse)
+def predict_stock(request: StockRequest):
+    try:
+        # データ取得
+        stock = yf.Ticker(request.ticker)
+        data = stock.history(period=request.period)
+        
+        # 必要なカラムを選択
+        data = data[['Close']]
+        
+        # 欠損値の処理
+        data = data.dropna()
+        
+        # ARIMAモデルの定義と適用
+        model = ARIMA(data, order=(5, 1, 0))  # p=5, d=1, q=0のモデルを使用
+        model_fit = model.fit()
+        
+        # 予測の実施
+        forecast = model_fit.forecast(steps=request.steps)
+
+        # 予測結果のタイムインデックスを設定
+        forecast_index = pd.date_range(start=data.index[-1], periods=request.steps + 1, closed='right')
+        forecast_series = pd.Series(forecast, index=forecast_index)
+        
+        # 予測結果をリストに変換
+        forecast_list = forecast.tolist()
+
+         # プロットの作成
+        plt.figure(figsize=(12, 6))
+        plt.plot(data.index, data['Close'], label='Observed')
+        plt.plot(forecast.index, forecast_series, label='Forecast', color='red')
+        plt.title(f'{request.ticker} Stock Price Prediction')
+        plt.xlabel('Date')
+        plt.ylabel('Price')
+        plt.legend()
+
+        # 画像の保存
+        now = datetime.now()
+        plot_filename = f'predict_arima{now}.png'
+        plt.savefig(plot_filename)
+        plt.close()
+        
+        return FileResponse(plot_filename)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/predict_plot")
+def predict_stock(request: StockRequest):
+    try:
+        # データ取得
+        stock = yf.Ticker(request.ticker)
+        data = stock.history(period=request.period)
+        
+        # 必要なカラムを選択
+        data = data[['Close']]
+        
+        # 欠損値の処理
+        data = data.dropna()
+        
+        # ARIMAモデルの定義と適用
+        model = ARIMA(data, order=(5, 1, 0))  # p=5, d=1, q=0のモデルを使用
+        model_fit = model.fit()
+        
+        # 予測の実施
+        forecast = model_fit.get_forecast(steps=request.steps)
+        forecast_index = pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=request.steps, freq='B')
+        forecast_series = pd.Series(forecast.predicted_mean.values, index=forecast_index)
+        
+        # プロットの作成
+        plt.figure(figsize=(12, 6))
+        plt.plot(data.index, data['Close'], label='Observed')
+        plt.plot(forecast_series.index, forecast_series, label='Forecast', color='red')
+        plt.title(f'{request.ticker} Stock Price Prediction')
+        plt.xlabel('Date')
+        plt.ylabel('Price')
+        plt.legend()
+
+        # 画像の保存
+        plot_file = 'prediction_plot.png'
+        plt.savefig(plot_file)
+        plt.close()
+
+        # ファイルを返す
+        return FileResponse(plot_file)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
