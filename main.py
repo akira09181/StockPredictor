@@ -7,6 +7,8 @@ from scraping import get_symbol
 import pandas as pd
 import matplotlib.pyplot as plt
 from fastapi.responses import HTMLResponse, FileResponse
+import seaborn as sns
+from datetime import datetime
 
 app = FastAPI()
 #app.include_router(alphavantage_api.router)
@@ -160,6 +162,25 @@ def get_stock_data(tickers:list[str],period:str):
     data.fillna(method='ffill', inplace=True)
 
     # 基本的な統計量の計算
+    correlation_kihon = data.corr()
+
+    data['Daily_Return'] = data['Close'].pct_change()
+
+    data['SMA_50'] = data['Close'].rolling(window=50).mean()
+    data['SMA_200'] = data['Close'].rolling(window=200).mean()
+
+    data['Volatility'] = data['Daily_Return'].rolling(window=50).std()
+    #　相関行列の計算
     correlation_matrix = data.corr()
+    print(correlation_matrix)
+
+    plt.figure(figsize=(12,8))
+    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', linewidth=0.5)
+    plt.title('Correlation Matrix')
+    # プロット画像の保存
+    now = datetime.now()
+    plot_filename = f'correlation_matrix{now}.png'
+    plt.savefig(plot_filename)
+    plt.close()
     
-    return correlation_matrix
+    return {'自己相関':correlation_kihon,'相関行列':correlation_matrix}
