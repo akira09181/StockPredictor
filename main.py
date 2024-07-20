@@ -298,6 +298,10 @@ from fastapi.responses import FileResponse
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM
+from sklearn.ensemble import RandomForestRegressor
+
+class ForecastResponse(BaseModel):
+    file_path: str
 
 
 @app.post("/predict_lstm", response_model=ForecastResponse)
@@ -317,24 +321,22 @@ def predict_stock(request: StockRequest):
         scaler = MinMaxScaler(feature_range=(0, 1))
         scaled_data = scaler.fit_transform(data)
 
-        # トレーニングデータの準備
-        train_size = int(len(scaled_data) * 0.8)
-        train_data = scaled_data[:train_size]
-        test_data = scaled_data[train_size:]
-
+        # データセットの準備
         def create_dataset(dataset, time_step=1):
             X, Y = [], []
-            for i in range(len(dataset) - time_step):
-                X.append(dataset[i:(i + time_step), 0])
+            for i in range(len(dataset) - time_step - 1):
+                a = dataset[i:(i + time_step), 0]
+                X.append(a)
                 Y.append(dataset[i + time_step, 0])
             return np.array(X), np.array(Y)
 
-        time_step = min(60, len(train_data) // 2, len(test_data) // 2)
-        if time_step < 1:
-            raise HTTPException(status_code=400, detail="Dataset is too small for prediction")
+        time_step = 60
+        X, Y = create_dataset(scaled_data, time_step)
 
-        X_train, y_train = create_dataset(train_data, time_step)
-        X_test, y_test = create_dataset(test_data, time_step)
+        # トレーニングデータとテストデータの分割
+        train_size = int(len(X) * 0.8)
+        X_train, X_test = X[:train_size], X[train_size:]
+        y_train, y_test = Y[:train_size], Y[train_size:]
 
         # データの形状変更
         X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
@@ -357,25 +359,34 @@ def predict_stock(request: StockRequest):
         train_predict = model.predict(X_train)
         test_predict = model.predict(X_test)
 
+        # 未来の値の予測
+        future_steps = request.steps
+        future_predictions = []
+        last_sequence = X[-1]
+
+        for _ in range(future_steps):
+            next_prediction = model.predict(last_sequence.reshape(1, time_step, 1))
+            future_predictions.append(next_prediction[0][0])
+            last_sequence = np.append(last_sequence[1:], next_prediction[0])
+            last_sequence = last_sequence.reshape(time_step, 1)
+
         # データの逆スケーリング
         train_predict = scaler.inverse_transform(train_predict)
         test_predict = scaler.inverse_transform(test_predict)
-
-        # 予測のプロット用データ準備
-        train_predict_plot = np.empty_like(scaled_data)
-        train_predict_plot[:, :] = np.nan
-        train_predict_plot[time_step:len(train_predict) + time_step, :] = train_predict
-
-        test_predict_plot = np.empty_like(scaled_data)
-        test_predict_plot[:, :] = np.nan
-        test_predict_plot[len(train_predict) + (time_step * 2):len(scaled_data), :] = test_predict
+        future_predictions = scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
+        actual_data = scaler.inverse_transform(scaled_data)
 
         # プロットの作成
         plt.figure(figsize=(12, 6))
-        plt.plot(scaler.inverse_transform(scaled_data), label='Observed')
-        plt.plot(train_predict_plot, label='Train Predict')
-        plt.plot(test_predict_plot, label='Test Predict')
-        plt.title(f'{request.ticker} Stock Price Prediction')
+        plt.plot(data.index, actual_data, label='Observed')
+        plt.plot(data.index[time_step:time_step+len(train_predict)], train_predict, label='Train Predict')
+        plt.plot(data.index[time_step+len(train_predict)+1:time_step+len(train_predict)+1+len(test_predict)], test_predict, label='Test Predict')
+
+        # 未来予測のプロット
+        future_dates = pd.date_range(start=data.index[-1], periods=future_steps + 1, freq='B')[1:]
+        plt.plot(future_dates, future_predictions, label='Future Predict', color='red')
+
+        plt.title(f'{request.ticker} Stock Price Prediction using LSTM')
         plt.xlabel('Date')
         plt.ylabel('Price')
         plt.legend()
@@ -384,7 +395,6 @@ def predict_stock(request: StockRequest):
         plot_file = 'prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
-
         # ファイルを返す
         return FileResponse(plot_file)
     
@@ -437,6 +447,89 @@ def predict_stock(request: StockRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.post("/predict_random_forest")
+def predict_stock(request: StockRequest):
+    try:
+        # データ取得
+        stock = yf.Ticker(request.ticker)
+        data = stock.history(period=request.period)
+        
+        # 必要なカラムを選択
+        data = data[['Close']]
+        
+        # 欠損値の処理
+        data = data.dropna()
+
+        # データのスケーリング
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(data)
+
+        # データセットの準備
+        def create_dataset(dataset, time_step=1):
+            X, Y = [], []
+            for i in range(len(dataset) - time_step - 1):
+                a = dataset[i:(i + time_step), 0]
+                X.append(a)
+                Y.append(dataset[i + time_step, 0])
+            return np.array(X), np.array(Y)
+
+        time_step = 60
+        X, Y = create_dataset(scaled_data, time_step)
+
+        # トレーニングデータとテストデータの分割
+        train_size = int(len(X) * 0.8)
+        X_train, X_test = X[:train_size], X[train_size:]
+        y_train, y_test = Y[:train_size], Y[train_size:]
+
+        # ランダムフォレストモデルの構築
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+
+        # 予測の実施
+        train_predict = model.predict(X_train)
+        test_predict = model.predict(X_test)
+
+        # 未来の値の予測
+        future_steps = request.steps
+        future_predictions = []
+        last_sequence = X[-1]
+
+        for _ in range(future_steps):
+            next_prediction = model.predict(last_sequence.reshape(1, -1))
+            future_predictions.append(next_prediction[0])
+            last_sequence = np.append(last_sequence[1:], next_prediction)
+
+        # データの逆スケーリング
+        train_predict = scaler.inverse_transform(train_predict.reshape(-1, 1))
+        test_predict = scaler.inverse_transform(test_predict.reshape(-1, 1))
+        future_predictions = scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
+        actual_data = scaler.inverse_transform(scaled_data)
+
+        # プロットの作成
+        plt.figure(figsize=(12, 6))
+        plt.plot(data.index, actual_data, label='Observed')
+        plt.plot(data.index[time_step:time_step+len(train_predict)], train_predict, label='Train Predict')
+        plt.plot(data.index[time_step+len(train_predict)+1:time_step+len(train_predict)+1+len(test_predict)], test_predict, label='Test Predict')
+
+        # 未来予測のプロット
+        future_dates = pd.date_range(start=data.index[-1], periods=future_steps + 1)[1:]
+        plt.plot(future_dates, future_predictions, label='Future Predict', color='red')
+
+        plt.title(f'{request.ticker} Stock Price Prediction using RandomForest')
+        plt.xlabel('Date')
+        plt.ylabel('Price')
+        plt.legend()
+
+        # 画像の保存
+        plot_file = 'prediction_plot.png'
+        plt.savefig(plot_file)
+        plt.close()
+
+        # ファイルを返す
+        return FileResponse(plot_file)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
