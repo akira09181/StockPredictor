@@ -300,7 +300,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 class ForecastResponse(BaseModel):
     file_path: str
@@ -650,8 +650,17 @@ def predict_stock(request: StockRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/predict_adjust", response_model=ForecastMeanResponse)
+
+class ForecastAdjustResponse(BaseModel):
+    file_path: str
+    train_mae: float
+    train_mse: float
+    train_r2: float
+    test_mae: float
+    test_mse: float
+    test_r2: float
+
+@app.post("/predict_adjust", response_model=ForecastAdjustResponse)
 def predict_stock(request: StockRequest):
     try:
         # データ取得
@@ -721,8 +730,10 @@ def predict_stock(request: StockRequest):
         # 評価指標の計算
         train_mae = mean_absolute_error(y_train, train_predict)
         train_mse = mean_squared_error(y_train, train_predict)
+        train_r2 = r2_score(y_train, train_predict)
         test_mae = mean_absolute_error(y_test, test_predict)
         test_mse = mean_squared_error(y_test, test_predict)
+        test_r2 = r2_score(y_test, test_predict)
 
         # プロットの作成
         plt.figure(figsize=(12, 6))
@@ -755,9 +766,16 @@ def predict_stock(request: StockRequest):
         plt.savefig(plot_file)
         plt.close()
 
-
         # ファイルを返す
-        return ForecastMeanResponse(file_path=plot_file, train_mae=train_mae, train_mse=train_mse, test_mae=test_mae, test_mse=test_mse)
+        return ForecastAdjustResponse(
+            file_path=plot_file, 
+            train_mae=train_mae, 
+            train_mse=train_mse, 
+            train_r2=train_r2, 
+            test_mae=test_mae, 
+            test_mse=test_mse, 
+            test_r2=test_r2
+        )
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -765,3 +783,105 @@ def predict_stock(request: StockRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+@app.post("/predict_random_forest_adjust", response_model=ForecastAdjustResponse)
+def predict_stock(request: StockRequest):
+    try:
+        # データ取得
+        stock = yf.Ticker(request.ticker)
+        data = stock.history(period=request.period)
+        
+        # 必要なカラムを選択
+        data = data[['Close']]
+        
+        # 欠損値の処理
+        data = data.dropna()
+
+        # データのスケーリング
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(data)
+
+        # データセットの準備
+        def create_dataset(dataset, time_step=1):
+            X, Y = [], []
+            for i in range(len(dataset) - time_step - 1):
+                a = dataset[i:(i + time_step), 0]
+                X.append(a)
+                Y.append(dataset[i + time_step, 0])
+            return np.array(X), np.array(Y)
+
+        time_step = 60
+        X, Y = create_dataset(scaled_data, time_step)
+
+        # トレーニングデータとテストデータの分割
+        train_size = int(len(X) * 0.8)
+        X_train, X_test = X[:train_size], X[train_size:]
+        y_train, y_test = Y[:train_size], Y[train_size:]
+
+        # ランダムフォレストモデルの構築
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X_train, y_train)
+
+        # 予測の実施
+        train_predict = model.predict(X_train)
+        test_predict = model.predict(X_test)
+
+        # データの逆スケーリング
+        train_predict = scaler.inverse_transform(train_predict.reshape(-1, 1))
+        test_predict = scaler.inverse_transform(test_predict.reshape(-1, 1))
+        y_train = scaler.inverse_transform(y_train.reshape(-1, 1))
+        y_test = scaler.inverse_transform(y_test.reshape(-1, 1))
+        actual_data = scaler.inverse_transform(scaled_data)
+
+        # 評価指標の計算
+        train_mae = mean_absolute_error(y_train, train_predict)
+        train_mse = mean_squared_error(y_train, train_predict)
+        train_r2 = r2_score(y_train, train_predict)
+        test_mae = mean_absolute_error(y_test, test_predict)
+        test_mse = mean_squared_error(y_test, test_predict)
+        test_r2 = r2_score(y_test, test_predict)
+
+        # プロットの作成
+        plt.figure(figsize=(12, 6))
+        plt.plot(data.index, actual_data, label='Observed')
+        plt.plot(data.index[time_step:time_step+len(train_predict)], train_predict, label='Train Predict')
+        plt.plot(data.index[time_step+len(train_predict)+1:time_step+len(train_predict)+1+len(test_predict)], test_predict, label='Test Predict')
+
+        # 未来予測のプロット
+        future_steps = request.steps
+        future_predictions = []
+        last_sequence = X[-1]
+
+        for _ in range(future_steps):
+            next_prediction = model.predict(last_sequence.reshape(1, -1))
+            future_predictions.append(next_prediction[0])
+            last_sequence = np.append(last_sequence[1:], next_prediction)
+            last_sequence = last_sequence.reshape(time_step, 1)
+
+        future_predictions = scaler.inverse_transform(np.array(future_predictions).reshape(-1, 1))
+        future_dates = pd.date_range(start=data.index[-1], periods=future_steps + 1, freq='B')[1:]
+        plt.plot(future_dates, future_predictions, label='Future Predict', color='red')
+
+        plt.title(f'{request.ticker} Stock Price Prediction using RandomForest')
+        plt.xlabel('Date')
+        plt.ylabel('Price')
+        plt.legend()
+
+        # 画像の保存
+        plot_file = 'prediction_plot.png'
+        plt.savefig(plot_file)
+        plt.close()
+
+        # ファイルを返す
+        return ForecastAdjustResponse(
+            file_path=plot_file, 
+            train_mae=train_mae, 
+            train_mse=train_mse, 
+            train_r2=train_r2, 
+            test_mae=test_mae, 
+            test_mse=test_mse, 
+            test_r2=test_r2
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
