@@ -12,6 +12,12 @@ from datetime import datetime
 from statsmodels.tsa.arima.model import ARIMA
 from pydantic import BaseModel
 from typing import List
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
+
+
+
 
 class StockRequest(BaseModel):
     ticker: str
@@ -22,6 +28,17 @@ class ForecastResponse(BaseModel):
     forecast: List[float]
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+if not os.path.exists("static"):
+    os.makedirs("static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 #app.include_router(alphavantage_api.router)
 app.include_router(get_symbol.router)
 
@@ -401,7 +418,7 @@ def predict_stock(request: StockRequest):
         plt.legend()
 
         # 画像の保存
-        plot_file = 'prediction_plot.png'
+        plot_file = 'static/prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
 
@@ -513,7 +530,7 @@ def predict_stock(request: StockRequest):
         plt.legend()
 
         # 画像の保存
-        plot_file = 'prediction_plot.png'
+        plot_file = 'static/prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
 
@@ -557,7 +574,7 @@ def predict_stock(request: StockRequest):
         plt.legend()
 
         # 画像の保存
-        plot_file = 'prediction_plot.png'
+        plot_file = 'static/prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
 
@@ -641,7 +658,7 @@ def predict_stock(request: StockRequest):
         plt.legend()
 
         # 画像の保存
-        plot_file = 'prediction_plot.png'
+        plot_file = 'static/prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
 
@@ -664,9 +681,14 @@ class ForecastAdjustResponse(BaseModel):
 def predict_stock(request: StockRequest):
     try:
         # データ取得
+        print("Fetching stock data...")
         stock = yf.Ticker(request.ticker)
         data = stock.history(period=request.period)
         
+        if data.empty:
+            print("No data found for ticker:", request.ticker)
+            raise HTTPException(status_code=404, detail="No data found for ticker")
+
         # 必要なカラムを選択
         data = data[['Close']]
         
@@ -710,13 +732,12 @@ def predict_stock(request: StockRequest):
         # モデルのコンパイル
         model.compile(optimizer='adam', loss='mean_squared_error')
 
-        # 早期停止のコールバック
-        early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
         # モデルの訓練
-        model.fit(X_train, y_train, batch_size=16, epochs=100, validation_split=0.2, callbacks=[early_stopping])
+        print("Training model...")
+        model.fit(X_train, y_train, batch_size=16, epochs=1, validation_split=0.2)
 
         # 予測の実施
+        print("Predicting...")
         train_predict = model.predict(X_train)
         test_predict = model.predict(X_test)
 
@@ -734,6 +755,9 @@ def predict_stock(request: StockRequest):
         test_mae = mean_absolute_error(y_test, test_predict)
         test_mse = mean_squared_error(y_test, test_predict)
         test_r2 = r2_score(y_test, test_predict)
+
+        print(f"train_mae: {train_mae}, train_mse: {train_mse}, train_r2: {train_r2}")
+        print(f"test_mae: {test_mae}, test_mse: {test_mse}, test_r2: {test_r2}")
 
         # プロットの作成
         plt.figure(figsize=(12, 6))
@@ -762,7 +786,7 @@ def predict_stock(request: StockRequest):
         plt.legend()
 
         # 画像の保存
-        plot_file = 'prediction_plot.png'
+        plot_file = 'static/prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
 
@@ -778,8 +802,9 @@ def predict_stock(request: StockRequest):
         )
     
     except Exception as e:
+        print("Error:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
@@ -868,7 +893,7 @@ def predict_stock(request: StockRequest):
         plt.legend()
 
         # 画像の保存
-        plot_file = 'prediction_plot.png'
+        plot_file = 'static/prediction_plot.png'
         plt.savefig(plot_file)
         plt.close()
 
