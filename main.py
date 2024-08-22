@@ -14,18 +14,9 @@ from pydantic import BaseModel
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from mangum import Mangum
 import os
 
-
-
-
-class StockRequest(BaseModel):
-    ticker: str
-    period: str = '1y'
-    steps: int = 30
-
-class ForecastResponse(BaseModel):
-    forecast: List[float]
 
 app = FastAPI()
 
@@ -55,6 +46,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+handler = Mangum(app)
+class StockRequest(BaseModel):
+    ticker: str
+    period: str = '1y'
+    steps: int = 30
+
+class ForecastResponse(BaseModel):
+    forecast: List[float]
+
 
 @app.post("/stock/")
 def get_stock_data(tickers:list[str],period:str):
